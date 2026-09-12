@@ -1,0 +1,10 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:*:*:*"},
+    {"Effect":"Allow","Action":["dynamodb:Query","dynamodb:GetItem","dynamodb:PutItem","dynamodb:UpdateItem"],"Resource":["arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch","arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch/index/*"]},
+    {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::wardwatch-media-979342849987/*"},
+    {"Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],"Resource":"*"},
+    {"Effect":"Allow","Action":["ses:SendEmail"],"Resource":"*"}
+  ]
+}
