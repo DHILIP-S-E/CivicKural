@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     whatsapp_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_api_base: str = "https://graph.facebook.com/v20.0"
+    whatsapp_verify_token: str = ""
 
     ses_sender: str = "wardwatch@example.org"
 
