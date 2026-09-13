@@ -244,7 +244,7 @@ function SettingsContent() {
 
 export default function Settings() {
   return (
-    <AuthGuard>
+    <AuthGuard roles={["admin"]}>
       <SettingsContent />
     </AuthGuard>
   );

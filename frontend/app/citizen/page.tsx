@@ -1,0 +1,7 @@
+"use client";
+
+import Link from "next/link";
+import CitizenAuthGuard from "@/components/CitizenAuthGuard";
+
+function CitizenPanel(){return <><div className="page-head"><div><div className="eyebrow">MY CITIZEN PANEL</div><h1>Welcome to Civic Kural</h1><p>Submit concerns and privately follow every report connected to your verified Indian mobile number.</p></div><span className="badge resolved">Phone verified</span></div><div className="citizen-pathways"><Link href="/report" className="pathway-card"><span className="pathway-icon">＋</span><div><div className="eyebrow">NEW CONCERN</div><h3>Report an issue</h3><p>Use text, photo, video, voice, and consent-based location.</p><b>Start report →</b></div></Link><Link href="/my-reports" className="pathway-card"><span className="pathway-icon">⌕</span><div><div className="eyebrow">PRIVATE HISTORY</div><h3>My reports</h3><p>See status, authority updates, evidence, and verification requests.</p><b>View my reports →</b></div></Link><Link href="/public" className="pathway-card"><span className="pathway-icon">◎</span><div><div className="eyebrow">WARD TRANSPARENCY</div><h3>Public performance</h3><p>View privacy-safe aggregate service outcomes.</p><b>View public data →</b></div></Link></div><div className="privacy-note"><b>Private by default:</b> complaint details and evidence are available only within your verified citizen session. Public visitors receive aggregate statistics only.</div></>}
+export default function CitizenPage(){return <CitizenAuthGuard><CitizenPanel/></CitizenAuthGuard>}

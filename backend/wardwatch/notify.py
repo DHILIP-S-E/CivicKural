@@ -5,6 +5,7 @@ If SNS_ENABLED is not set, FakeSns is used so the pipeline runs offline.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -16,6 +17,14 @@ from .config import get_settings
 
 class Messenger(Protocol):
     def send_text(self, to: str, body: str) -> None: ...
+
+
+class OtpSender(Protocol):
+    def send_otp(self, to: str, code: str) -> None: ...
+
+
+class WhatsAppOtpUnavailable(RuntimeError):
+    """Raised when the production WhatsApp OTP sender is not configured."""
 
 
 @dataclass
@@ -36,6 +45,89 @@ class FakeSns:
 
     def send_text(self, to: str, body: str) -> None:
         self.sent.append((to, body))
+
+
+@dataclass
+class FakeWhatsAppOtp:
+    """Test-only WhatsApp authentication-template sender."""
+
+    sent: list[tuple[str, str]] = field(default_factory=list)
+
+    def send_otp(self, to: str, code: str) -> None:
+        self.sent.append((to, code))
+
+
+class AwsWhatsAppOtp:
+    """Send an approved WhatsApp Authentication template through AWS Social."""
+
+    def __init__(self) -> None:
+        s = get_settings()
+        if not s.aws_whatsapp_otp_enabled:
+            raise WhatsAppOtpUnavailable("WhatsApp OTP is not configured")
+        self._client = boto3.client("socialmessaging", region_name=s.aws_region)
+        self._phone_number_id = s.whatsapp_aws_phone_number_id
+        self._template_name = s.whatsapp_otp_template_name
+        self._language = s.whatsapp_otp_template_language
+        self._api_version = s.whatsapp_meta_api_version
+
+    def send_otp(self, to: str, code: str) -> None:
+        message = {
+            "messaging_product": "whatsapp",
+            "to": to.lstrip("+"),
+            "type": "template",
+            "template": {
+                "name": self._template_name,
+                "language": {"code": self._language},
+                "components": [
+                    {"type": "body", "parameters": [{"type": "text", "text": code}]},
+                    {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "0",
+                        "parameters": [{"type": "text", "text": code}],
+                    },
+                ],
+            },
+        }
+        self._client.send_whatsapp_message(
+            OriginationPhoneNumberId=self._phone_number_id,
+            MetaApiVersion=self._api_version,
+            Message=json.dumps(message, separators=(",", ":")).encode("utf-8"),
+        )
+
+
+class MetaWhatsAppOtp:
+    """Send an approved Authentication template through Meta Cloud API."""
+
+    def __init__(self) -> None:
+        s = get_settings()
+        if not s.whatsapp_enabled or not s.whatsapp_otp_template_name:
+            raise WhatsAppOtpUnavailable("WhatsApp OTP is not configured")
+        self._url = f"{s.whatsapp_api_base}/{s.whatsapp_phone_number_id}/messages"
+        self._headers = {"Authorization": f"Bearer {s.whatsapp_token}"}
+        self._template_name = s.whatsapp_otp_template_name
+        self._language = s.whatsapp_otp_template_language
+
+    def send_otp(self, to: str, code: str) -> None:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to.lstrip("+"),
+            "type": "template",
+            "template": {
+                "name": self._template_name,
+                "language": {"code": self._language},
+                "components": [
+                    {"type": "body", "parameters": [{"type": "text", "text": code}]},
+                    {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "0",
+                        "parameters": [{"type": "text", "text": code}],
+                    },
+                ],
+            },
+        }
+        httpx.post(self._url, json=payload, headers=self._headers, timeout=15).raise_for_status()
 
 
 class WhatsAppCloud:
@@ -79,6 +171,7 @@ class SesMailer:
 
 _messenger: Messenger | None = None
 _sns_client: Messenger | None = None
+_whatsapp_otp_sender: OtpSender | None = None
 
 
 def get_messenger() -> Messenger:
@@ -105,6 +198,28 @@ def set_sns_client(m: Messenger) -> None:
     """Test hook."""
     global _sns_client
     _sns_client = m
+
+
+def get_whatsapp_otp_sender() -> OtpSender:
+    global _whatsapp_otp_sender
+    if _whatsapp_otp_sender is None:
+        settings = get_settings()
+        if not settings.whatsapp_otp_enabled:
+            raise WhatsAppOtpUnavailable("WhatsApp OTP is not configured")
+        _whatsapp_otp_sender = (
+            AwsWhatsAppOtp() if settings.aws_whatsapp_otp_enabled else MetaWhatsAppOtp()
+        )
+    return _whatsapp_otp_sender
+
+
+def set_whatsapp_otp_sender(sender: OtpSender | None) -> None:
+    """Test hook; passing None restores environment-driven configuration."""
+    global _whatsapp_otp_sender
+    _whatsapp_otp_sender = sender
+
+
+def send_whatsapp_otp(to: str, code: str) -> None:
+    get_whatsapp_otp_sender().send_otp(to, code)
 
 
 def send_contact(contact: str, subject: str, body: str, channel: str | None = None) -> None:

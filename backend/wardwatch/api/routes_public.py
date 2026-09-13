@@ -11,13 +11,23 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
 import base64
 import binascii
+import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
-from .. import aggregates, db, geo, storage, transcribe
+from .. import aggregates, db, geo, notify, storage, transcribe
 from ..citizen_access import community_ref, parse_community_ref, token_matches
 from ..config import get_settings
+from ..ids import hash_phone
 from ..models import Status, StatusEvent
+from ..phone_session import (
+    confirm_otp,
+    issue_phone_session,
+    request_otp,
+    resend_blocked,
+    resolve_session_phone,
+    verify_phone_session,
+)
 from ..pipeline import PipelineResult, Submission, run
 from ..priority import assess
 from ..wards import wards_for
@@ -86,13 +96,18 @@ async def submit_report(
     audio: UploadFile | None = File(None),
     audio_format: str = Form("ogg"),
     video: UploadFile | None = File(None),
-    contact_phone: str | None = Form(None),
+    x_phone_session: str = Header(default=""),
 ) -> dict:
     """Web-based citizen report intake — runs the same pipeline as the WhatsApp
     webhook, but bypasses the messenger reply path (there is no phone number to
-    reply to for a web submission). An optional contact_phone lets a web
-    citizen still receive SMS status/escalation updates via SNS."""
+    reply to for a web submission). Requires a verified phone-OTP login session
+    (X-Phone-Session header) so every web report is attributable to a real,
+    verified phone number — the same one used for SMS status/escalation
+    updates and for the "my reports" lookup."""
     tid = tenant_id or get_settings().default_tenant_id
+    phone = resolve_session_phone(tid, x_phone_session)
+    if phone is None:
+        raise HTTPException(status_code=401, detail="phone session required")
     if ward_id not in wards_for(tid):
         raise HTTPException(status_code=400, detail="invalid ward for tenant")
     if (lat is None) != (lng is None):
@@ -115,12 +130,11 @@ async def submit_report(
     sub = Submission(
         tenant_id=tid,
         ward_id=ward_id,
-        citizen_phone="web-anonymous",
+        citizen_phone=phone,
         photo=photo_bytes,
         transcript=full_transcript,
         shared_location=shared_location,
         issue_citizen_token=True,
-        contact_phone=contact_phone or None,
     )
     if not full_transcript.strip() and photo_bytes is None:
         raise HTTPException(status_code=400, detail="provide a description, voice note, or photo")
@@ -308,3 +322,85 @@ async def support_complaint(
     )
     db.put_complaint(complaint)
     return {"status": "ok", "report_count": complaint.duplicate_reports_count + 1}
+
+
+# --- Feature: citizen phone-OTP verification + "my reports" lookup ---
+
+def _india_phone(value: str) -> str:
+    """Accept Indian mobile numbers only and return canonical E.164 form."""
+    digits = re.sub(r"\D", "", value)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if len(digits) != 10 or digits[0] not in "6789":
+        raise ValueError("enter a valid 10-digit Indian mobile number")
+    return f"+91{digits}"
+
+class VerifyPhoneRequestBody(BaseModel):
+    tenant_id: str
+    phone: str
+
+    _normalize_phone = field_validator("phone")(_india_phone)
+
+
+class VerifyPhoneConfirmBody(BaseModel):
+    tenant_id: str
+    phone: str
+    code: str
+
+    _normalize_phone = field_validator("phone")(_india_phone)
+
+
+@router.post("/verify-phone/request")
+def verify_phone_request(body: VerifyPhoneRequestBody) -> dict:
+    """Send a 6-digit WhatsApp OTP to `phone`. Always responds generically — the
+    response never reveals whether the phone has any reports on file, to
+    avoid enumeration."""
+    phone_hash = hash_phone(body.phone)
+    existing = db.get_otp_challenge(body.tenant_id, phone_hash)
+    if resend_blocked(existing):
+        raise HTTPException(status_code=429, detail="please wait before requesting another code")
+    code = request_otp(body.tenant_id, phone_hash)
+    try:
+        notify.send_whatsapp_otp(body.phone, code)
+    except notify.WhatsAppOtpUnavailable as exc:
+        db.delete_otp_challenge(body.tenant_id, phone_hash)
+        raise HTTPException(status_code=503, detail="WhatsApp OTP is not configured") from exc
+    except Exception as exc:
+        db.delete_otp_challenge(body.tenant_id, phone_hash)
+        raise HTTPException(status_code=503, detail="WhatsApp could not send the verification code") from exc
+    return {"sent": True}
+
+
+@router.post("/verify-phone/confirm")
+def verify_phone_confirm(body: VerifyPhoneConfirmBody) -> dict:
+    phone_hash = hash_phone(body.phone)
+    if not confirm_otp(body.tenant_id, phone_hash, body.code):
+        raise HTTPException(status_code=400, detail="invalid or expired code")
+    token = issue_phone_session(body.tenant_id, phone_hash, body.phone)
+    return {"session_token": token}
+
+
+@router.get("/my-reports")
+def my_reports(
+    tenant_id: str | None = None,
+    x_phone_session: str = Header(default=""),
+) -> dict:
+    tid = tenant_id or get_settings().default_tenant_id
+    phone_hash = verify_phone_session(tid, x_phone_session)
+    if phone_hash is None:
+        raise HTTPException(status_code=401, detail="phone session required")
+    complaints = db.query_by_phone_hash(tid, phone_hash)
+    return {
+        "reports": [
+            {
+                "complaint_id": c.complaint_id,
+                "category": c.category.value,
+                "status": c.status.value,
+                "created_at": c.created_at.isoformat(),
+                "ward_id": c.ward_id,
+            }
+            for c in complaints
+        ]
+    }

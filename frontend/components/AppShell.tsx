@@ -4,11 +4,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ReactNode, useEffect, useState } from "react";
 import { getSession, signOut, type Session } from "@/lib/auth";
+import { clearCitizenSession, isCitizenSessionValid } from "@/lib/citizenSession";
 
 const nav = [
   {
-    href: "/",
-    label: "Operations",
+    href: "/citizen",
+    label: "Citizen Panel",
+    audience: ["citizen"],
+    icon: <span aria-hidden="true">⌂</span>,
+  },
+  {
+    href: "/officer",
+    label: "Case Queue",
+    audience: ["officer", "coordinator", "admin"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect width="7" height="9" x="3" y="3" rx="1" />
@@ -21,6 +29,7 @@ const nav = [
   {
     href: "/report",
     label: "Report Issue",
+    audience: ["citizen"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12 5v14" />
@@ -29,8 +38,27 @@ const nav = [
     ),
   },
   {
+    href: "/my-reports",
+    label: "My Reports",
+    audience: ["citizen"],
+    icon: <span aria-hidden="true">⌕</span>,
+  },
+  {
+    href: "/coordinator",
+    label: "Coordinator Panel",
+    audience: ["coordinator", "admin"],
+    icon: <span aria-hidden="true">◇</span>,
+  },
+  {
+    href: "/admin",
+    label: "Admin Panel",
+    audience: ["admin"],
+    icon: <span aria-hidden="true">▦</span>,
+  },
+  {
     href: "/escalations",
     label: "Escalations",
+    audience: ["officer", "admin"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="m18 15-6-6-6 6" />
@@ -40,6 +68,7 @@ const nav = [
   {
     href: "/public",
     label: "Public Data",
+    audience: ["public", "citizen", "officer", "coordinator", "admin"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" />
@@ -51,6 +80,7 @@ const nav = [
   {
     href: "/settings",
     label: "Policy",
+    audience: ["admin"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
@@ -61,6 +91,7 @@ const nav = [
   {
     href: "/admin/health",
     label: "Health",
+    audience: ["admin"],
     icon: (
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
@@ -72,13 +103,15 @@ const nav = [
 export default function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [session, setSession] = useState<Session | null>(null);
+  const [citizen, setCitizen] = useState(false);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const sync = () => setSession(getSession());
+    const sync = () => { setSession(getSession()); setCitizen(isCitizenSessionValid()); };
     sync();
     window.addEventListener("wardwatch-auth", sync);
-    return () => window.removeEventListener("wardwatch-auth", sync);
+    window.addEventListener("wardwatch-citizen-auth", sync);
+    return () => { window.removeEventListener("wardwatch-auth", sync); window.removeEventListener("wardwatch-citizen-auth", sync); };
   }, []);
 
   return (
@@ -124,7 +157,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </button>
 
         <nav className={open ? "nav-open" : ""}>
-          {nav.map((item) => {
+          {nav.filter((item) => item.audience.includes(session?.role ?? (citizen ? "citizen" : "public"))).map((item) => {
             const isActive = pathname === item.href;
             return (
               <Link
@@ -150,7 +183,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 {session.username.slice(0, 1).toUpperCase()}
               </span>
               <span className="account-name" title={session.username}>
-                {session.username}
+                {session.username}<small>{session.role}</small>
               </span>
               <button
                 className="button ghost compact"
@@ -162,13 +195,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 Sign out
               </button>
             </div>
+          ) : citizen ? (
+            <div className="user-pill"><span className="avatar">C</span><span className="account-name">Citizen<small>verified +91</small></span><button className="button ghost compact" onClick={() => { clearCitizenSession(); location.href = "/public"; }}>Sign out</button></div>
           ) : (
             <Link className="button compact" href="/login">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
                 <circle cx="12" cy="7" r="4" />
               </svg>
-              <span>Officer Portal</span>
+              <span>Login / Register</span>
             </Link>
           )}
         </div>

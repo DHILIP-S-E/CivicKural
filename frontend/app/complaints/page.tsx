@@ -6,6 +6,7 @@ import Link from "next/link";
 import { api, fileToBase64 } from "@/lib/api";
 import AuthGuard from "@/components/AuthGuard";
 import { friendlyError } from "@/lib/errors";
+import { getSession } from "@/lib/auth";
 
 function ComplaintDetail() {
   const params = useSearchParams();
@@ -15,6 +16,7 @@ function ComplaintDetail() {
   const [message, setMessage] = useState("");
   const [messageKind, setMessageKind] = useState<"success" | "error">("success");
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const canMutate = ["admin", "officer"].includes(getSession()?.role ?? "");
 
   const load = () => {
     if (!ward || !id) return setMessage("Missing administrative ward or complaint ID.");
@@ -91,7 +93,7 @@ function ComplaintDetail() {
   return (
     <>
       <div style={{ marginBottom: 16 }}>
-        <Link href="/" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>
+        <Link href="/officer" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600, color: "var(--muted)" }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <line x1="19" y1="12" x2="5" y2="12" />
             <polyline points="12 19 5 12 12 5" />
@@ -203,15 +205,15 @@ function ComplaintDetail() {
           <div className="panel">
             <div className="panel-head">
               <div>
-                <h3>Officer Actions</h3>
-                <p>Authenticated operator controls</p>
+                <h3>{canMutate ? "Officer Actions" : "Coordinator View"}</h3>
+                <p>{canMutate ? "Authenticated operator controls" : "Read-only case oversight"}</p>
               </div>
             </div>
             <div className="form-stack">
               <button
                 className="button full"
                 onClick={markInProgress}
-                disabled={busyAction !== null || complaint.status === "in_progress"}
+                disabled={!canMutate || busyAction !== null || complaint.status === "in_progress"}
               >
                 {busyAction === "in_progress" ? (
                   <>
@@ -227,7 +229,7 @@ function ComplaintDetail() {
                 <button
                   className="button secondary full"
                   onClick={approveAuthority}
-                  disabled={busyAction !== null}
+                  disabled={!canMutate || busyAction !== null}
                 >
                   {busyAction === "authority" ? (
                     <>
@@ -251,7 +253,7 @@ function ComplaintDetail() {
                     <span>Upload After-Work Evidence</span>
                     <small style={{ color: "var(--muted)" }}>VerificationAgent will inspect fix</small>
                   </div>
-                  <input type="file" accept="image/*" onChange={verifyAfterPhoto} disabled={busyAction !== null} />
+                  <input type="file" accept="image/*" onChange={verifyAfterPhoto} disabled={!canMutate || busyAction !== null} />
                   {busyAction === "verify" && (
                     <p style={{ marginTop: 10, color: "var(--brand)", fontWeight: 600 }}>
                       <span className="spinner" />
@@ -272,7 +274,7 @@ function ComplaintDetail() {
           </div>
 
           <div className="privacy-note">
-            <strong>Access Control: Ward Officer Role</strong>
+            <strong>Access Control: {canMutate ? "Ward Officer" : "Read-only Coordinator"}</strong>
             <br />
             This record contains operational details scoped strictly to authorized municipal officers for Ward {ward}.
           </div>
@@ -284,7 +286,7 @@ function ComplaintDetail() {
 
 export default function ComplaintPage() {
   return (
-    <AuthGuard>
+    <AuthGuard roles={["officer", "coordinator"]}>
       <Suspense fallback={<div className="state-card"><span className="spinner" />Loading protected case record…</div>}>
         <ComplaintDetail />
       </Suspense>

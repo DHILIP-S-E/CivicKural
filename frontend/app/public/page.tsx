@@ -46,7 +46,7 @@ export default function PublicPage() {
             Real-time public performance metrics without ever compromising citizen privacy. Verifiable department service levels, community priorities, and resolution rates.
           </p>
         </div>
-        <Link className="button" href="/report">
+        <Link className="button" href="/login?mode=citizen&next=%2Freport">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 5v14" />
             <path d="M5 12h14" />

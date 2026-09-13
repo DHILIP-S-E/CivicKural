@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     whatsapp_api_base: str = "https://graph.facebook.com/v20.0"
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
+    # AWS End User Messaging Social configuration for citizen WhatsApp OTP.
+    # The phone-number ID and approved authentication template are created
+    # when a Meta WABA is linked to this AWS account.
+    whatsapp_aws_phone_number_id: str = ""
+    whatsapp_otp_template_name: str = "wardwatch_login_otp"
+    whatsapp_otp_template_language: str = "en"
+    whatsapp_meta_api_version: str = "v20.0"
 
     ses_sender: str = "wardwatch@example.org"
 
@@ -44,6 +51,17 @@ class Settings(BaseSettings):
     @property
     def whatsapp_enabled(self) -> bool:
         return bool(self.whatsapp_token and self.whatsapp_phone_number_id)
+
+    @property
+    def whatsapp_otp_enabled(self) -> bool:
+        return bool(
+            self.whatsapp_otp_template_name
+            and (self.whatsapp_aws_phone_number_id or self.whatsapp_enabled)
+        )
+
+    @property
+    def aws_whatsapp_otp_enabled(self) -> bool:
+        return bool(self.whatsapp_aws_phone_number_id and self.whatsapp_otp_template_name)
 
 
 @lru_cache

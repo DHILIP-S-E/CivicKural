@@ -232,3 +232,33 @@ class InboundSession(BaseModel):
     language: str = "en"
     awaiting_location: bool = False
     expires_at: int
+
+
+class OtpChallenge(BaseModel):
+    """Short-lived phone-verification OTP challenge (DynamoDB TTL item).
+
+    Only the SHA-256 digest of the 6-digit code is ever persisted — never the
+    plaintext code, and never the plaintext phone number (phone_hash mirrors
+    Complaint.citizen_phone_hash, the only identifier we store)."""
+
+    tenant_id: str
+    phone_hash: str
+    code_hash: str
+    attempts: int = 0
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: int
+
+
+class PhoneSession(BaseModel):
+    """Login session issued after a successful OTP confirm, used both for the
+    "my reports" lookup and to authenticate web report submission.
+
+    Only the SHA-256 digest of the opaque bearer token is persisted. The
+    phone number itself is stored only as KMS ciphertext (phone_ciphertext),
+    never in plaintext, mirroring citizen_contact_ciphertexts on Complaint."""
+
+    tenant_id: str
+    phone_hash: str
+    token_digest: str
+    phone_ciphertext: str
+    expires_at: int

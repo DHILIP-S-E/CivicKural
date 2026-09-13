@@ -29,9 +29,10 @@ async function req(path: string, init: RequestInit = {}, auth = true) {
 }
 
 // Multipart requests never set Content-Type manually — the browser sets the
-// boundary — and are never authenticated (public citizen-facing endpoints).
-async function reqForm(path: string, form: FormData, method = "POST") {
-  const res = await fetch(`${BASE}${path}`, { method, body: form, cache: "no-store" });
+// boundary — and are never Cognito-authenticated (public citizen-facing
+// endpoints), though some accept a citizen phone-session header instead.
+async function reqForm(path: string, form: FormData, method = "POST", headers: Record<string, string> = {}) {
+  const res = await fetch(`${BASE}${path}`, { method, body: form, headers, cache: "no-store" });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
@@ -102,6 +103,10 @@ export type SubmitReportParams = {
   photo?: File | null;
   audio?: File | null;
   video?: File | null;
+  // Verified-phone session token, sent as X-Phone-Session. The backend now
+  // derives the reporting phone number from this session instead of a
+  // contact_phone form field.
+  phoneSessionToken: string;
 };
 
 export async function submitReport(params: SubmitReportParams) {
@@ -113,7 +118,7 @@ export async function submitReport(params: SubmitReportParams) {
   if (params.photo) form.append("photo", params.photo);
   if (params.audio) form.append("audio", params.audio);
   if (params.video) form.append("video", params.video);
-  return reqForm(`/public/reports`, form);
+  return reqForm(`/public/reports`, form, "POST", { "X-Phone-Session": params.phoneSessionToken });
 }
 
 export async function getNearbyComplaints(opts: {
@@ -135,4 +140,25 @@ export async function supportComplaint(reference: string, photo?: File | null) {
   const form = new FormData();
   if (photo) form.append("photo", photo);
   return reqForm(`/public/community/${reference}/support`, form);
+}
+
+export function requestPhoneOtp(tenantId: string, phone: string) {
+  return req(`/public/verify-phone/request`, { method: "POST", body: JSON.stringify({ tenant_id: tenantId, phone }) }, false);
+}
+
+export async function confirmPhoneOtp(tenantId: string, phone: string, code: string): Promise<string> {
+  const res = await req(
+    `/public/verify-phone/confirm`,
+    { method: "POST", body: JSON.stringify({ tenant_id: tenantId, phone, code }) },
+    false
+  );
+  return res.session_token;
+}
+
+export function getMyReports(tenantId: string, sessionToken: string) {
+  return req(
+    `/public/my-reports?tenant_id=${encodeURIComponent(tenantId)}`,
+    { headers: { "X-Phone-Session": sessionToken } },
+    false
+  );
 }

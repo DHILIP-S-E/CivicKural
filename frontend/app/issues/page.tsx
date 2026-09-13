@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { getComplaintDetail, verifyResolution } from "@/lib/api";
 import { friendlyError } from "@/lib/errors";
+import CitizenAuthGuard from "@/components/CitizenAuthGuard";
 
 function IssueDetail() {
   const id = useSearchParams().get("id") ?? "";
@@ -275,8 +276,10 @@ function IssueDetail() {
 
 export default function IssuePage() {
   return (
-    <Suspense fallback={<div className="state-card"><span className="spinner" />Loading citizen tracking…</div>}>
-      <IssueDetail />
-    </Suspense>
+    <CitizenAuthGuard>
+      <Suspense fallback={<div className="state-card"><span className="spinner" />Loading citizen tracking…</div>}>
+        <IssueDetail />
+      </Suspense>
+    </CitizenAuthGuard>
   );
 }

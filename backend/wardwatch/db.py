@@ -6,6 +6,7 @@ Single-table design:
 
 GSI1: gsi1pk = tenant_id#ward_id#category, gsi1sk = status   -> open-complaint dedup query
 GSI2: gsi2pk = tenant_id,                  gsi2sk = sla_deadline -> escalation sweep
+GSI3: gsi3pk = tenant_id#citizen_phone_hash, gsi3sk = created_at -> "my reports" lookup
 """
 from __future__ import annotations
 
@@ -23,6 +24,8 @@ from .models import (
     InfraFlag,
     InboundSession,
     OPEN_STATUSES,
+    OtpChallenge,
+    PhoneSession,
     Status,
     TenantConfig,
 )
@@ -30,6 +33,8 @@ from .models import (
 CONFIG_SK = "CONFIG"
 SESSION_SK = "ACTIVE"
 SYSTEM_PK = "SYSTEM"
+OTP_SK = "OTP"
+PHONE_SESSION_SK = "PHONE_SESSION"
 
 
 def _table():
@@ -51,6 +56,8 @@ def _complaint_item(c: Complaint) -> dict[str, Any]:
     item["gsi1sk"] = c.status.value
     item["gsi2pk"] = c.tenant_id
     item["gsi2sk"] = c.sla_deadline.isoformat()
+    item["gsi3pk"] = f"{c.tenant_id}#{c.citizen_phone_hash}"
+    item["gsi3sk"] = c.created_at.isoformat()
     item["item_type"] = "COMPLAINT"
     return item
 
@@ -104,6 +111,15 @@ def query_tenant_complaints(tenant_id: str, ward_ids: Iterable[str]) -> list[Com
     for w in ward_ids:
         out.extend(query_ward(tenant_id, w))
     return out
+
+
+def query_by_phone_hash(tenant_id: str, phone_hash: str) -> list[Complaint]:
+    """All complaints filed under a citizen's phone hash (spec: "my reports")."""
+    resp = _table().query(
+        IndexName="gsi3",
+        KeyConditionExpression=Key("gsi3pk").eq(f"{tenant_id}#{phone_hash}"),
+    )
+    return [_to_complaint(i) for i in resp.get("Items", []) if i.get("item_type") == "COMPLAINT"]
 
 
 # --- infra flags ---
@@ -192,3 +208,57 @@ def get_sweep_marker(name: str) -> datetime | None:
     if not item:
         return None
     return datetime.fromisoformat(item["last_run"])
+
+
+# --- phone verification: OTP challenges (DynamoDB TTL compatible) ---
+def create_otp_challenge(challenge: OtpChallenge) -> None:
+    item = _dumps(challenge)
+    item.update({
+        "pk": f"OTP#{challenge.tenant_id}#{challenge.phone_hash}",
+        "sk": OTP_SK,
+        "item_type": "OTP_CHALLENGE",
+    })
+    _table().put_item(Item=item)
+
+
+def get_otp_challenge(tenant_id: str, phone_hash: str) -> OtpChallenge | None:
+    resp = _table().get_item(Key={"pk": f"OTP#{tenant_id}#{phone_hash}", "sk": OTP_SK})
+    item = resp.get("Item")
+    if not item:
+        return None
+    return OtpChallenge.model_validate(
+        {k: v for k, v in item.items() if k in OtpChallenge.model_fields}
+    )
+
+
+def increment_otp_attempts(tenant_id: str, phone_hash: str) -> None:
+    _table().update_item(
+        Key={"pk": f"OTP#{tenant_id}#{phone_hash}", "sk": OTP_SK},
+        UpdateExpression="SET attempts = attempts + :one",
+        ExpressionAttributeValues={":one": 1},
+    )
+
+
+def delete_otp_challenge(tenant_id: str, phone_hash: str) -> None:
+    _table().delete_item(Key={"pk": f"OTP#{tenant_id}#{phone_hash}", "sk": OTP_SK})
+
+
+# --- phone verification: "my reports" session tokens (DynamoDB TTL compatible) ---
+def create_phone_session(session: PhoneSession) -> None:
+    item = _dumps(session)
+    item.update({
+        "pk": f"PHONESESSION#{session.token_digest}",
+        "sk": PHONE_SESSION_SK,
+        "item_type": "PHONE_SESSION",
+    })
+    _table().put_item(Item=item)
+
+
+def get_phone_session(token_digest: str) -> PhoneSession | None:
+    resp = _table().get_item(Key={"pk": f"PHONESESSION#{token_digest}", "sk": PHONE_SESSION_SK})
+    item = resp.get("Item")
+    if not item:
+        return None
+    return PhoneSession.model_validate(
+        {k: v for k, v in item.items() if k in PhoneSession.model_fields}
+    )

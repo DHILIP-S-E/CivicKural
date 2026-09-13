@@ -160,7 +160,7 @@ function HealthContent() {
 
 export default function AdminHealth() {
   return (
-    <AuthGuard>
+    <AuthGuard roles={["admin"]}>
       <HealthContent />
     </AuthGuard>
   );

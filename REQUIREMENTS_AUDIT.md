@@ -31,6 +31,7 @@ token.
 | Community support without public complaint disclosure | signed opaque community references; supporting evidence is stored |
 | Weekly 90-day/150m pattern detection | `agents/pattern.py`; flags are now idempotent |
 | Officer, coordinator and admin role/ward enforcement | coordinators are read-only; mutation and settings gates are backend-enforced |
+| Single-login role isolation | Logged-out visitors see aggregate public content only. One login page supports India-only citizen phone OTP or staff email/username plus password; verified identity opens only the Citizen, Officer, Coordinator, or Administrator panel. Citizen reporting and report history are route-guarded. |
 | Aggregate-only public accountability | department SLA, tier-3 breaches, density map, totals and success metrics |
 | Human approval for consequential authority action | officer approval endpoint and UI |
 | Replaceable simulated authority API | `authority.py`; responses are explicitly labelled simulated |
@@ -72,18 +73,18 @@ until reviewed and applied deliberately.
 - The API, escalation sweep and pattern sweep Lambda functions are active on the
   final code packages. DynamoDB TTL is enabled, and the scoped Amazon Location
   index and rotating KMS key are provisioned.
-- The last security configuration step is intentionally pending explicit
-  approval because rotating the exposed JWT signing secret invalidates all
-  currently issued officer/admin tokens. The same configuration update attaches
-  the KMS alias to the API and escalation worker and raises the API timeout from
-  30 to 60 seconds.
+- Cognito authentication is active, the legacy JWT secret is rotated, KMS is
+  bound to the API and escalation worker, and the API timeout is 60 seconds.
+- The citizen-first homepage and distinct Officer, Coordinator, and
+  Administrator panels are deployed. Cognito role claims control landing pages,
+  navigation visibility, and UI authorization boundaries; backend role and ward
+  enforcement remains authoritative.
 
 ## Partial or environment-dependent
 
 | Requirement | Remaining dependency |
 |---|---|
 | Live WhatsApp sandbox verification | Cross-message assembly and signature checks are implemented and tested locally; the final Meta round trip necessarily follows hosting. |
-| KMS-routed proactive WhatsApp escalation | Encryption, decryption, multi-reporter delivery and fallback update storage are implemented; the key exists and its environment binding awaits the explicitly approved security update described above. |
 | SES notification | Application support is complete; sender/recipient verification is an AWS-account operational prerequisite. |
 | Live Meta WhatsApp round trip | Requires the account's Meta App Secret and a newly rotated WhatsApp access token. |
 
@@ -92,17 +93,12 @@ until reviewed and applied deliberately.
 | Item | Reason |
 |---|---|
 | Real municipal complaint integration | Both specifications permit a clearly labelled simulated authority for the prototype; official APIs are municipality-specific. |
-| Cognito, AgentCore Gateway/managed Memory, Rekognition | Optional production expansion in the CivicFix document. The required AgentCore Runtime adapter is prepared; Lambda/API Gateway/JWT remain the primary channel runtime. |
+| AgentCore Gateway/managed Memory, Rekognition | Optional production expansion in the CivicFix document. Cognito is now the active staff authentication layer and the required AgentCore Runtime adapter is prepared. |
 | Multi-city self-service onboarding, billing, IoT and predictive maintenance | Explicit non-goals or future expansion, not MVP acceptance criteria. |
 | Officer performance scoring by name | Explicitly prohibited by the WardWatch specification. |
 
 ## Explicitly deferred (not silently dropped)
 
-- **JWT secret rotation, KMS alias binding, API timeout bump** — as this
-  document already states, rotating the live secret invalidates every issued
-  officer/admin token; this remains pending explicit approval. The Secrets
-  Manager template resource above is prepared for that moment but not wired
-  live.
 - **Live Meta WhatsApp round trip, SES sender/recipient verification, applying
   the Cognito IaC to the live pool** — these require real AWS/Meta account
   actions (verifying identities, rotating tokens, running `sam deploy`)
@@ -117,12 +113,10 @@ until reviewed and applied deliberately.
 
 ### AWS account prerequisites to close the remaining items
 
-1. Approve and apply the JWT secret rotation + KMS alias binding + API timeout
-   update (`infra/template.yaml`, already staged pre-existing pending change).
-2. Verify SES sender/recipient identities in the `ap-south-1` account.
-3. Supply a rotated Meta WhatsApp access token and confirm the App Secret for
+1. Verify SES sender/recipient identities in the `ap-south-1` account.
+2. Supply a rotated Meta WhatsApp access token and confirm the App Secret for
    the production number.
-4. Review and apply the new Cognito `template.yaml` resources with
+3. Review and apply the new Cognito `template.yaml` resources with
    `sam deploy`, then retire the standalone `infra/cognito-user-pool.json`
    / `infra/runtime-additions-policy.json` files once confirmed equivalent to
    the live pool.

@@ -176,7 +176,7 @@ function EscalationContent() {
 
 export default function Escalations() {
   return (
-    <AuthGuard>
+    <AuthGuard roles={["officer", "coordinator"]}>
       <EscalationContent />
     </AuthGuard>
   );

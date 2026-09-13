@@ -4,7 +4,11 @@ import { FormEvent, useState, useEffect } from "react";
 import Link from "next/link";
 import { getNearbyComplaints, setCitizenToken, submitReport, supportComplaint } from "@/lib/api";
 import { friendlyError } from "@/lib/errors";
+import PhoneLogin from "@/components/PhoneLogin";
+import { clearCitizenSession, getCitizenSession, isCitizenSessionValid, setCitizenSession } from "@/lib/citizenSession";
+import CitizenAuthGuard from "@/components/CitizenAuthGuard";
 
+const TENANT_ID = "MDU-W14";
 const MIN_DESCRIPTION_LENGTH = 10;
 
 const CATEGORIES = [
@@ -16,7 +20,9 @@ const CATEGORIES = [
   ["other", "⚙ Other Civic Infrastructure Issue"],
 ];
 
-export default function ReportPage() {
+function ReportContent() {
+  const [checkedSession, setCheckedSession] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [category, setCategory] = useState("");
   const [photo, setPhoto] = useState<File | null>(null);
@@ -33,6 +39,21 @@ export default function ReportPage() {
   const [error, setError] = useState("");
   const [nearby, setNearby] = useState<any[]>([]);
   const [supported, setSupported] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    setLoggedIn(isCitizenSessionValid());
+    setCheckedSession(true);
+  }, []);
+
+  function handleVerified(token: string) {
+    setCitizenSession(token);
+    setLoggedIn(true);
+  }
+
+  function logout() {
+    clearCitizenSession();
+    setLoggedIn(false);
+  }
 
   useEffect(() => {
     let interval: any = null;
@@ -114,6 +135,13 @@ export default function ReportPage() {
       return;
     }
 
+    const citizenSession = getCitizenSession();
+    if (!citizenSession) {
+      setError("Your verification session has expired. Please log in again.");
+      setLoggedIn(false);
+      return;
+    }
+
     setSubmitting(true);
     try {
       const res = await submitReport({
@@ -124,6 +152,7 @@ export default function ReportPage() {
         photo,
         audio,
         video,
+        phoneSessionToken: citizenSession.token,
       });
       setResult(res);
       if (res.complaint_id && res.citizen_access_token) {
@@ -154,10 +183,32 @@ export default function ReportPage() {
             Your report is autonomously analyzed, deduplicated, mapped, and assigned a legally enforceable SLA. Speak or type in your language.
           </p>
         </div>
-        <Link className="button ghost" href="/public">
-          View Public Dashboard
-        </Link>
+        <div className="toolbar">
+          <Link className="button ghost" href="/my-reports">
+            View My Reports
+          </Link>
+          <Link className="button ghost" href="/public">
+            View Public Dashboard
+          </Link>
+          {loggedIn && (
+            <button type="button" className="button ghost" onClick={logout}>
+              Not you? Log out
+            </button>
+          )}
+        </div>
       </div>
+
+      {!checkedSession ? null : !loggedIn ? (
+        <div style={{ maxWidth: 480 }}>
+          <PhoneLogin
+            tenantId={TENANT_ID}
+            onVerified={handleVerified}
+            title="Verify Your Phone Number"
+            description="We'll send a WhatsApp one-time code to verify you before you can submit a report."
+          />
+        </div>
+      ) : (
+        <>
 
       <div className="report-layout">
         <section className="panel">
@@ -423,6 +474,12 @@ export default function ReportPage() {
           </div>
         </section>
       )}
+        </>
+      )}
     </>
   );
+}
+
+export default function ReportPage() {
+  return <CitizenAuthGuard><ReportContent /></CitizenAuthGuard>;
 }

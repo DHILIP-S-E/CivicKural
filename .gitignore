@@ -59,3 +59,4 @@ Thumbs.db
 # Misc
 *.tmp
 .cache/
+.env.example

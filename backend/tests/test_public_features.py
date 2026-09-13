@@ -6,10 +6,15 @@ from fastapi.testclient import TestClient
 from wardwatch import aggregates, db
 from wardwatch.agents.orchestrator import handle_submission
 from wardwatch.api.app import create_app
+from wardwatch.ids import hash_phone
 from wardwatch.models import Category, Status, StatusEvent
+from wardwatch.notify import FakeSns, set_sns_client
 from wardwatch.pipeline import Submission
 
 from .factories import make_complaint
+
+TENANT = "MDU-CORP"
+REPORTER_PHONE = "+91 90000 66666"
 
 
 def _sub(**kw):
@@ -23,6 +28,29 @@ def _sub(**kw):
     )
     base.update(kw)
     return Submission(**base)
+
+
+def _requested_code(fake: FakeSns) -> str:
+    body = fake.sent[-1][1]
+    for i in range(len(body) - 5):
+        chunk = body[i : i + 6]
+        if chunk.isdigit():
+            return chunk
+    raise AssertionError(f"no 6-digit code found in {body!r}")
+
+
+def _phone_session(client: TestClient, phone: str = REPORTER_PHONE) -> str:
+    """Runs the OTP request/confirm flow and returns a session token, mirroring
+    the helper pattern in test_phone_verification.py."""
+    fake = FakeSns()
+    set_sns_client(fake)
+    client.post("/public/verify-phone/request", json={"tenant_id": TENANT, "phone": phone})
+    code = _requested_code(fake)
+    resp = client.post(
+        "/public/verify-phone/confirm",
+        json={"tenant_id": TENANT, "phone": phone, "code": code},
+    )
+    return resp.json()["session_token"]
 
 
 def _tiny_jpeg() -> bytes:
@@ -196,10 +224,12 @@ def test_submit_report_with_audio_transcribes(fakes, monkeypatch):
     set_vision_hook(capture_vision)
 
     client = TestClient(create_app())
+    token = _phone_session(client)
     resp = client.post(
         "/public/reports",
         data={"transcript": "", "ward_id": "MDU-W14"},
         files={"audio": ("note.ogg", b"fake-audio-bytes", "audio/ogg")},
+        headers={"X-Phone-Session": token},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -208,6 +238,63 @@ def test_submit_report_with_audio_transcribes(fakes, monkeypatch):
     assert any("streetlight" in p for p in seen_prompts)
     c = db.get_complaint("MDU-CORP", "MDU-W14", body["complaint_id"])
     assert c.category == Category.STREETLIGHT
+    assert c.citizen_phone_hash == hash_phone(REPORTER_PHONE)
+
+
+def test_submit_report_without_phone_session_returns_401(fakes):
+    client = TestClient(create_app())
+    resp = client.post(
+        "/public/reports",
+        data={"transcript": "broken streetlight", "ward_id": "MDU-W14"},
+    )
+    assert resp.status_code == 401
+
+
+def test_submit_report_with_invalid_phone_session_returns_401(fakes):
+    client = TestClient(create_app())
+    resp = client.post(
+        "/public/reports",
+        data={"transcript": "broken streetlight", "ward_id": "MDU-W14"},
+        headers={"X-Phone-Session": "bogus-token"},
+    )
+    assert resp.status_code == 401
+
+
+def test_submit_report_attributes_to_verified_phone_and_appears_in_my_reports(fakes):
+    from wardwatch.llm import set_vision_hook
+
+    set_vision_hook(lambda system_prompt, user_text, images: {
+        "category": "streetlight",
+        "severity": "medium",
+        "description": "Broken streetlight on main road.",
+        "needs_clarification": False,
+        "clarification_question": None,
+    })
+
+    client = TestClient(create_app())
+    token = _phone_session(client)
+    resp = client.post(
+        "/public/reports",
+        data={
+            "transcript": "broken streetlight on main road",
+            "ward_id": "MDU-W14",
+            "lat": 9.9252,
+            "lng": 78.1198,
+        },
+        headers={"X-Phone-Session": token},
+    )
+    assert resp.status_code == 200
+    complaint_id = resp.json()["complaint_id"]
+
+    c = db.get_complaint("MDU-CORP", "MDU-W14", complaint_id)
+    assert c.citizen_phone_hash == hash_phone(REPORTER_PHONE)
+
+    my = client.get(
+        "/public/my-reports", params={"tenant_id": TENANT}, headers={"X-Phone-Session": token}
+    )
+    assert my.status_code == 200
+    report_ids = [r["complaint_id"] for r in my.json()["reports"]]
+    assert complaint_id in report_ids
 
 
 def test_nearby_discovery_is_community_safe(fakes):

@@ -8,6 +8,9 @@ export type Session = {
   refreshToken?: string;
   expiresAt: number;
   username: string;
+  role: "admin" | "officer" | "coordinator";
+  tenantId: string;
+  wards: string[];
 };
 
 export type LoginResult =
@@ -34,23 +37,32 @@ async function cognito(target: string, body: Record<string, unknown>) {
   return result;
 }
 
-function decodeUsername(idToken: string, fallback: string) {
+function decodeClaims(idToken: string, fallback: string) {
   try {
     const payload = JSON.parse(atob(idToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return payload["cognito:username"] || payload.email || fallback;
+    const role = ["admin", "officer", "coordinator"].includes(payload["custom:role"])
+      ? payload["custom:role"]
+      : "officer";
+    return {
+      username: payload["cognito:username"] || payload.email || fallback,
+      role,
+      tenantId: payload["custom:tenant_id"] || "MDU-CORP",
+      wards: String(payload["custom:wards"] || "").split(",").map((ward) => ward.trim()).filter(Boolean),
+    };
   } catch {
-    return fallback;
+    return { username: fallback, role: "officer" as const, tenantId: "MDU-CORP", wards: [] as string[] };
   }
 }
 
 function saveAuthentication(result: any, username: string): Session {
   const auth = result.AuthenticationResult;
+  const claims = decodeClaims(auth.IdToken, username);
   const session: Session = {
     accessToken: auth.AccessToken,
     idToken: auth.IdToken,
     refreshToken: auth.RefreshToken,
     expiresAt: Date.now() + (auth.ExpiresIn ?? 3600) * 1000,
-    username: decodeUsername(auth.IdToken, username),
+    ...claims,
   };
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
   window.dispatchEvent(new Event("wardwatch-auth"));
@@ -132,6 +144,9 @@ async function refreshSession(session: Session): Promise<Session | null> {
       refreshToken: session.refreshToken,
       expiresAt: Date.now() + (auth.ExpiresIn ?? 3600) * 1000,
       username: session.username,
+      role: session.role,
+      tenantId: session.tenantId,
+      wards: session.wards,
     };
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
     window.dispatchEvent(new Event("wardwatch-auth"));
@@ -153,4 +168,11 @@ export async function ensureFreshSession(): Promise<Session | null> {
   if (refreshed) return refreshed;
   signOut();
   return null;
+}
+
+export function roleHome(role?: Session["role"]) {
+  if (role === "admin") return "/admin";
+  if (role === "coordinator") return "/coordinator";
+  if (role === "officer") return "/officer";
+  return "/";
 }

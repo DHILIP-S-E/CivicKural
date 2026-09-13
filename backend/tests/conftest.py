@@ -34,6 +34,8 @@ def _create_table(client, name):
             {"AttributeName": "gsi1sk", "AttributeType": "S"},
             {"AttributeName": "gsi2pk", "AttributeType": "S"},
             {"AttributeName": "gsi2sk", "AttributeType": "S"},
+            {"AttributeName": "gsi3pk", "AttributeType": "S"},
+            {"AttributeName": "gsi3sk", "AttributeType": "S"},
         ],
         KeySchema=[
             {"AttributeName": "pk", "KeyType": "HASH"},
@@ -56,6 +58,14 @@ def _create_table(client, name):
                 ],
                 "Projection": {"ProjectionType": "ALL"},
             },
+            {
+                "IndexName": "gsi3",
+                "KeySchema": [
+                    {"AttributeName": "gsi3pk", "KeyType": "HASH"},
+                    {"AttributeName": "gsi3sk", "KeyType": "RANGE"},
+                ],
+                "Projection": {"ProjectionType": "ALL"},
+            },
         ],
     )
 
@@ -71,6 +81,12 @@ def aws(monkeypatch):
             Bucket=s.wardwatch_bucket,
             CreateBucketConfiguration={"LocationConstraint": s.aws_region},
         )
+        # A real KMS key so contact.protect/reveal (citizen notification
+        # ciphertexts and phone-session ciphertexts) work end-to-end in tests
+        # instead of silently no-op'ing as they do when unconfigured.
+        key_id = boto3.client("kms", region_name=s.aws_region).create_key()["KeyMetadata"]["KeyId"]
+        monkeypatch.setenv("CONTACT_KMS_KEY_ID", key_id)
+        get_settings.cache_clear()
         yield
     get_settings.cache_clear()
 
@@ -93,6 +109,7 @@ def fakes():
     set_text_hook(lambda sp, ut: "Likely subgrade failure — recommend infrastructure review.")
     yield fake
     notify._messenger = None
+    notify._whatsapp_otp_sender = None
     transcribe.set_transcribe_hook(None)
     geocode.set_geocode_hook(None)
     set_vision_hook(None)

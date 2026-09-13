@@ -34,6 +34,15 @@ Parameters:
     Type: String
     NoEcho: true
     Default: ""
+  WhatsAppAwsPhoneNumberId:
+    Type: String
+    Default: ""
+  WhatsAppOtpTemplateName:
+    Type: String
+    Default: "wardwatch_login_otp"
+  WhatsAppOtpTemplateLanguage:
+    Type: String
+    Default: "en"
   # Toggle to "true" only as a deliberate, reviewed migration step (see
   # JwtSecretManaged resource below) — switching this on requires the same
   # rotation approval as any other JWT secret change.
@@ -68,6 +77,9 @@ Globals:
         WHATSAPP_PHONE_NUMBER_ID: !Ref WhatsAppPhoneNumberId
         WHATSAPP_VERIFY_TOKEN: !Ref WhatsAppVerifyToken
         WHATSAPP_APP_SECRET: !Ref WhatsAppAppSecret
+        WHATSAPP_AWS_PHONE_NUMBER_ID: !Ref WhatsAppAwsPhoneNumberId
+        WHATSAPP_OTP_TEMPLATE_NAME: !Ref WhatsAppOtpTemplateName
+        WHATSAPP_OTP_TEMPLATE_LANGUAGE: !Ref WhatsAppOtpTemplateLanguage
         CONTACT_KMS_KEY_ID: !GetAtt CitizenContactKey.Arn
 
 Resources:
@@ -100,6 +112,16 @@ Resources:
             - { AttributeName: gsi2pk, KeyType: HASH }
             - { AttributeName: gsi2sk, KeyType: RANGE }
           Projection: { ProjectionType: ALL }
+      # GSI3 (documentation only — NOT declared below): powers the citizen
+      # phone-OTP verification "my reports" lookup added in wardwatch/db.py.
+      #   gsi3pk = "{tenant_id}#{citizen_phone_hash}"
+      #   gsi3sk = created_at (ISO 8601 string)
+      # The live table is managed outside this CloudFormation template (see
+      # prior investigation notes), so no AttributeDefinitions/
+      # GlobalSecondaryIndexes entries are added here — this comment exists
+      # purely so the key schema is discoverable alongside gsi1/gsi2. The
+      # actual GSI must be created out-of-band against the live table before
+      # wardwatch.db.query_by_phone_hash can be used against it.
 
   MediaBucket:
     Type: AWS::S3::Bucket
@@ -208,6 +230,9 @@ Resources:
             Resource: "*"
           - Effect: Allow
             Action: [sns:Publish]
+            Resource: "*"
+          - Effect: Allow
+            Action: [social-messaging:SendWhatsAppMessage]
             Resource: "*"
           - Effect: Allow
             Action: [transcribe:StartTranscriptionJob, transcribe:GetTranscriptionJob, transcribe:DeleteTranscriptionJob]
