@@ -6,9 +6,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import hashlib
 
 from ..geo import PATTERN_RADIUS_M, haversine_m
-from ..ids import new_flag_id
 from ..llm import text
 from ..models import Category, Complaint, Geo, GeoSource, InfraFlag
 
@@ -66,17 +66,30 @@ def summarize(cl: Cluster, summarizer=text) -> str:
 
 
 def find_flags(
-    tenant_id: str, ward_id: str, complaints: list[Complaint], now: datetime, summarizer=text
+    tenant_id: str,
+    ward_id: str,
+    complaints: list[Complaint],
+    now: datetime,
+    summarizer=text,
+    existing_flag_ids: set[str] | None = None,
 ) -> list[InfraFlag]:
     flags: list[InfraFlag] = []
     for cl in cluster(complaints, now):
+        centroid = cl.centroid
+        stable_key = (
+            f"{tenant_id}|{ward_id}|{cl.category.value}|"
+            f"{round(centroid.lat, 3)}|{round(centroid.lng, 3)}"
+        )
+        flag_id = "IF-" + hashlib.sha256(stable_key.encode("utf-8")).hexdigest()[:12].upper()
+        if existing_flag_ids and flag_id in existing_flag_ids:
+            continue
         flags.append(
             InfraFlag(
-                flag_id=new_flag_id(),
+                flag_id=flag_id,
                 tenant_id=tenant_id,
                 ward_id=ward_id,
                 category=cl.category,
-                centroid=cl.centroid,
+                centroid=centroid,
                 incident_count=len(cl.members),
                 window_days=WINDOW_DAYS,
                 summary=summarize(cl, summarizer),

@@ -2,9 +2,13 @@
   "Version": "2012-10-17",
   "Statement": [
     {"Effect":"Allow","Action":["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],"Resource":"arn:aws:logs:*:*:*"},
-    {"Effect":"Allow","Action":["dynamodb:Query","dynamodb:GetItem","dynamodb:PutItem","dynamodb:UpdateItem"],"Resource":["arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch","arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch/index/*"]},
+    {"Effect":"Allow","Action":["dynamodb:Query","dynamodb:GetItem","dynamodb:PutItem","dynamodb:UpdateItem","dynamodb:DeleteItem"],"Resource":["arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch","arn:aws:dynamodb:ap-south-1:979342849987:table/wardwatch/index/*"]},
     {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject"],"Resource":"arn:aws:s3:::wardwatch-media-979342849987/*"},
+    {"Effect":"Allow","Action":["s3:DeleteObject"],"Resource":["arn:aws:s3:::wardwatch-media-979342849987/_transcribe/*","arn:aws:s3:::wardwatch-media-979342849987/_sessions/*"]},
     {"Effect":"Allow","Action":["bedrock:InvokeModel","bedrock:InvokeModelWithResponseStream"],"Resource":"*"},
-    {"Effect":"Allow","Action":["ses:SendEmail"],"Resource":"*"}
+    {"Effect":"Allow","Action":["ses:SendEmail"],"Resource":"*"},
+    {"Effect":"Allow","Action":["transcribe:StartTranscriptionJob","transcribe:GetTranscriptionJob","transcribe:DeleteTranscriptionJob"],"Resource":"*"},
+    {"Effect":"Allow","Action":["geo:SearchPlaceIndexForText"],"Resource":"arn:aws:geo:ap-south-1:979342849987:place-index/wardwatch-places"},
+    {"Effect":"Allow","Action":["kms:Encrypt","kms:Decrypt"],"Resource":"arn:aws:kms:ap-south-1:979342849987:key/435b329f-54e6-4138-ab94-795488838586"}
   ]
 }

@@ -1,19 +1,18 @@
-"""OrchestratorAgent — owns the complaint lifecycle, calls the others as tools (spec §3).
-
-The heavy reasoning model is optional here: `handle_submission` runs the
-deterministic pipeline directly, while `build_agent` exposes the same steps as
-Strands tools for the demo's "agent decides" narrative.
-"""
+"""OrchestratorAgent — deterministic runtime plus bounded Strands tools."""
 from __future__ import annotations
 
-from ..models import TenantConfig
+import json
+
+from .. import db
+from ..models import Category, Geo, GeoSource, TenantConfig
 from ..pipeline import PipelineResult, Submission, run
 
-SYSTEM_PROMPT = """You are the WardWatch orchestrator. For each citizen submission you:
-1. call pin_location, 2. call run_intake, 3. call check_duplicate,
-4. call route_complaint, 5. call persist_complaint.
-Stop and ask the citizen exactly one question if intake or location is ambiguous.
-Never ask about more than one thing at a time."""
+SYSTEM_PROMPT = """You are the WardWatch orchestrator. Investigate with tools before
+taking action: analyze the issue, inspect nearby duplicates, find the configured
+authority, and assess priority. Create an internal record only when location and a
+description are present. External authority submission always requires separate human
+approval and is unavailable through this agent. Ask exactly one question if intake or
+location is ambiguous. Never invent an authority response, ticket, or resolution."""
 
 
 def handle_submission(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
@@ -22,11 +21,54 @@ def handle_submission(sub: Submission, config: TenantConfig | None = None) -> Pi
 
 
 def build_agent():
-    """Strands Agent wrapping the pipeline as a single tool (demo/reasoning path)."""
+    """Build the interactive/AgentCore Strands agent."""
     from strands import Agent, tool
 
     from ..config import get_settings
-    from ..llm import _strands_agent  # noqa: F401 - reuse model config
+    from ..priority import assess
+    from .dedup import find_duplicate
+    from .intake import analyze
+    from .routing import route
+
+    @tool
+    def analyze_issue(transcript: str) -> str:
+        """Classify a citizen description and calculate transparent priority."""
+        intake = analyze(None, transcript)
+        priority = assess(intake.category, intake.severity, intake.description)
+        return json.dumps({
+            **intake.model_dump(mode="json"),
+            "priority": priority.priority.value,
+            "priority_score": priority.score,
+            "priority_factors": priority.factors,
+        })
+
+    @tool
+    def search_existing_reports(
+        tenant_id: str,
+        ward_id: str,
+        category: str,
+        lat: float,
+        lng: float,
+        geo_source: str = "whatsapp_share",
+    ) -> str:
+        """Check for a nearby open report with deterministic deduplication rules."""
+        decision = find_duplicate(
+            Geo(lat=lat, lng=lng, source=GeoSource(geo_source)),
+            db.open_complaints_by_category(tenant_id, ward_id, Category(category).value),
+        )
+        return json.dumps({
+            "duplicate": decision.is_duplicate,
+            "complaint_id": decision.match.complaint_id if decision.match else None,
+            "distance_m": decision.distance_m,
+            "needs_human_review": decision.needs_review,
+        })
+
+    @tool
+    def find_authority(tenant_id: str, category: str, description: str = "") -> str:
+        """Resolve the department from the tenant's configured authority directory."""
+        return route(
+            Category(category), description, db.get_tenant_config(tenant_id)
+        ).value
 
     @tool
     def process_submission(
@@ -34,8 +76,10 @@ def build_agent():
         ward_id: str,
         citizen_phone: str,
         transcript: str,
+        lat: float,
+        lng: float,
     ) -> str:
-        """Process a text-only civic complaint submission end to end."""
+        """Create or merge an internal record; this never submits externally."""
         res = run(
             Submission(
                 tenant_id=tenant_id,
@@ -43,6 +87,7 @@ def build_agent():
                 citizen_phone=citizen_phone,
                 photo=None,
                 transcript=transcript,
+                shared_location=(lat, lng),
             )
         )
         return res.message
@@ -55,5 +100,5 @@ def build_agent():
             model_id=s.bedrock_reasoning_model_id, region_name=s.aws_region
         ),
         system_prompt=SYSTEM_PROMPT,
-        tools=[process_submission],
+        tools=[analyze_issue, search_existing_reports, find_authority, process_submission],
     )

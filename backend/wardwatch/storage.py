@@ -33,6 +33,10 @@ def get_photo(key: str) -> bytes:
     return resp["Body"].read()
 
 
+def delete_object(key: str) -> None:
+    _client().delete_object(Bucket=get_settings().wardwatch_bucket, Key=key)
+
+
 def presigned_url(key: str, expires: int = 900) -> str:
     return _client().generate_presigned_url(
         "get_object",

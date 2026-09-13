@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from . import db, exif, geocode, storage
 from .agents import dedup, routing
 from .agents.intake import analyze
+from .citizen_access import new_access_token, token_digest
+from .contact import protect
 from .ids import hash_phone, new_complaint_id
 from .models import (
     Complaint,
@@ -20,6 +22,8 @@ from .models import (
     TenantConfig,
 )
 from .sla import sla_deadline
+from .priority import assess
+from .localize import detect_language, message as citizen_message
 
 
 @dataclass
@@ -33,6 +37,12 @@ class Submission:
     shared_location: tuple[float, float] | None = None
     # Optional free-text landmark, e.g. from the tier-4 clarification reply.
     landmark_text: str | None = None
+    issue_citizen_token: bool = False
+    # Optional SMS contact for citizens without a WhatsApp thread (e.g. the web
+    # intake form). When set, this — not citizen_phone — is protected as the
+    # citizen's notification destination, tagged with the "sms" channel so
+    # escalation notifications route through SNS instead of WhatsApp.
+    contact_phone: str | None = None
 
 
 @dataclass
@@ -40,6 +50,7 @@ class PipelineResult:
     kind: str  # "created" | "merged" | "needs_clarification" | "needs_location"
     complaint: Complaint | None = None
     message: str = ""
+    citizen_access_token: str | None = None
 
 
 def pin_location(sub: Submission) -> Geo | None:
@@ -67,9 +78,10 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
 
     geo = pin_location(sub)
     if geo is None:
+        language = detect_language(sub.transcript or sub.landmark_text or "")
         return PipelineResult(
             kind="needs_location",
-            message="Please reply with the nearest street or landmark to the issue.",
+            message=citizen_message(language, "needs_location"),
         )
 
     intake = analyze(sub.photo, sub.transcript)
@@ -78,9 +90,16 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
             kind="needs_clarification",
             message=intake.clarification_question or "Could you clarify the issue?",
         )
+    if sub.photo and intake.evidence_relevant is False:
+        return PipelineResult(
+            kind="needs_clarification",
+            message=intake.evidence_note or "Please upload a clearer photo showing the reported issue.",
+        )
 
     phone_hash = hash_phone(sub.citizen_phone)
     now = datetime.now(timezone.utc)
+    contact_value = sub.contact_phone or sub.citizen_phone
+    contact_channel = "sms" if sub.contact_phone else "whatsapp"
 
     # --- dedup ---
     open_same = db.open_complaints_by_category(
@@ -89,7 +108,21 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
     decision = dedup.find_duplicate(geo, open_same)
     if decision.is_duplicate and decision.match:
         match = decision.match
+        access_token = new_access_token() if sub.issue_citizen_token else None
+        if access_token:
+            match.citizen_access_hashes.append(token_digest(access_token))
+        protected = protect(contact_value, sub.tenant_id)
+        if protected:
+            match.citizen_contact_ciphertexts.append(protected)
+            match.citizen_contact_channels.append(contact_channel)
         match.duplicate_reports_count += 1
+        priority = assess(
+            match.category, match.severity, match.description,
+            match.duplicate_reports_count + 1, config,
+            match.evidence_relevant,
+        )
+        match.priority = priority.priority
+        match.priority_factors = priority.factors | {"score": priority.score}
         match.status_history.append(
             StatusEvent(
                 status=match.status,
@@ -104,11 +137,17 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
         return PipelineResult(
             kind="merged",
             complaint=match,
-            message=f"This is already tracked as #{match.complaint_id}.",
+            message=citizen_message(intake.language, "merged", id=match.complaint_id),
+            citizen_access_token=access_token,
         )
 
     # --- routing ---
     dept = routing.route(intake.category, intake.description, config)
+    priority = assess(
+        intake.category, intake.severity, intake.description, 1, config, intake.evidence_relevant
+    )
+    access_token = new_access_token() if sub.issue_citizen_token else None
+    protected = protect(contact_value, sub.tenant_id)
 
     # --- persist ---
     cid = new_complaint_id(now)
@@ -123,7 +162,10 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
         ward_id=sub.ward_id,
         citizen_phone_hash=phone_hash,
         category=intake.category,
+        issue_type=intake.issue_type or intake.category.value,
         severity=intake.severity,
+        priority=priority.priority,
+        priority_factors=priority.factors | {"score": priority.score},
         geo=geo,
         description=intake.description,
         language=intake.language,
@@ -132,12 +174,23 @@ def run(sub: Submission, config: TenantConfig | None = None) -> PipelineResult:
         created_at=now,
         sla_deadline=sla_deadline(intake.category, now, config),
         routed_dept=dept,
+        citizen_access_hashes=[token_digest(access_token)] if access_token else [],
+        citizen_contact_ciphertexts=[protected] if protected else [],
+        citizen_contact_channels=[contact_channel] if protected else [],
+        evidence_relevant=intake.evidence_relevant,
+        evidence_note=intake.evidence_note,
         status_history=[StatusEvent(status=Status.OPEN, ts=now)],
     )
     db.put_complaint(complaint)
     return PipelineResult(
         kind="created",
         complaint=complaint,
-        message=f"Logged as #{cid}. Routed to {dept.value}. "
-        f"Target resolution by {complaint.sla_deadline:%d %b %Y}.",
+        message=citizen_message(
+            intake.language,
+            "created",
+            id=cid,
+            dept=dept.value,
+            date=f"{complaint.sla_deadline:%d %b %Y}",
+        ),
+        citizen_access_token=access_token,
     )

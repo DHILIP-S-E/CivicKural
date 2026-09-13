@@ -36,7 +36,9 @@ Only 3 of 7 components call a model: `IntakeAgent`, `VerificationAgent`,
 | `frontend/` | Next.js officer + public dashboards |
 
 Data model and business rules are in the spec; the authoritative copy of the
-rules lives in `sla.py`, `geo.py`, `agents/escalation.py`, `agents/pattern.py`.
+rules lives in `sla.py`, `geo.py`, `priority.py`, `agents/escalation.py`, and
+`agents/pattern.py`. See `REQUIREMENTS_AUDIT.md` for the consolidated WardWatch /
+CivicFix acceptance audit and documented specification conflicts.
 
 ## Local development
 
@@ -93,7 +95,7 @@ Send a second call within 75 m with the same category → response `kind: "merge
 
 ## Verification
 
-- **Unit + integration:** `python -m pytest -q` — 31 tests covering the geo radius
+- **Unit + integration:** `python -m pytest -q` — 52 tests covering the geo radius
   table, SLA deadlines, dedup match/review, routing, escalation tiers, the
   3-in-90-days/150 m pattern threshold, the end-to-end pipeline (create → merge →
   escalate → verify), public-endpoint PII assertions, and backend role
@@ -108,5 +110,6 @@ Send a second call within 75 m with the same category → response `kind: "merge
   pinning may silently fall through to geocoding; test with a real forwarded image.
 - `geo.WARD_BBOX` and `wards.TENANT_WARDS` are static here; a real deployment
   stores ward geometry and rosters in DynamoDB.
-- The real WhatsApp webhook payload is normalised to `WhatsAppInbound` by the
-  messaging-provider integration, which is out of scope for this scaffold.
+- The real Meta webhook accepts text, location, image and audio messages and
+  assembles multi-message submissions in an expiring DynamoDB session. A live
+  Cloud API sandbox round trip is still required after each deployment.

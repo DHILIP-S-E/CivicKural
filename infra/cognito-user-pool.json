@@ -1,0 +1,21 @@
+{
+  "PoolName": "wardwatch-users",
+  "Policies": {
+    "PasswordPolicy": {
+      "MinimumLength": 12,
+      "RequireUppercase": true,
+      "RequireLowercase": true,
+      "RequireNumbers": true,
+      "RequireSymbols": true,
+      "TemporaryPasswordValidityDays": 7
+    }
+  },
+  "UsernameConfiguration": {"CaseSensitive": false},
+  "AdminCreateUserConfig": {"AllowAdminCreateUserOnly": true},
+  "UserAttributeUpdateSettings": {"AttributesRequireVerificationBeforeUpdate": []},
+  "Schema": [
+    {"Name": "role", "AttributeDataType": "String", "Mutable": true, "Required": false, "StringAttributeConstraints": {"MinLength": "4", "MaxLength": "20"}},
+    {"Name": "tenant_id", "AttributeDataType": "String", "Mutable": true, "Required": false, "StringAttributeConstraints": {"MinLength": "3", "MaxLength": "50"}},
+    {"Name": "wards", "AttributeDataType": "String", "Mutable": true, "Required": false, "StringAttributeConstraints": {"MinLength": "3", "MaxLength": "512"}}
+  ]
+}

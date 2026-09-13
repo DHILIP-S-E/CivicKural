@@ -21,12 +21,15 @@ from .config import get_settings
 from .models import (
     Complaint,
     InfraFlag,
+    InboundSession,
     OPEN_STATUSES,
     Status,
     TenantConfig,
 )
 
 CONFIG_SK = "CONFIG"
+SESSION_SK = "ACTIVE"
+SYSTEM_PK = "SYSTEM"
 
 
 def _table():
@@ -141,3 +144,51 @@ def put_tenant_config(cfg: TenantConfig) -> None:
     item["sk"] = CONFIG_SK
     item["item_type"] = "CONFIG"
     _table().put_item(Item=item)
+
+
+# --- short-lived WhatsApp conversation assembly (DynamoDB TTL compatible) ---
+def get_inbound_session(tenant_id: str, phone_hash: str) -> InboundSession | None:
+    response = _table().get_item(
+        Key={"pk": f"SESSION#{tenant_id}#{phone_hash}", "sk": SESSION_SK}
+    )
+    item = response.get("Item")
+    if not item:
+        return None
+    return InboundSession.model_validate(
+        {key: value for key, value in item.items() if key in InboundSession.model_fields}
+    )
+
+
+def put_inbound_session(session: InboundSession) -> None:
+    item = _dumps(session)
+    item.update({
+        "pk": f"SESSION#{session.tenant_id}#{session.citizen_phone_hash}",
+        "sk": SESSION_SK,
+        "item_type": "INBOUND_SESSION",
+    })
+    _table().put_item(Item=item)
+
+
+def delete_inbound_session(tenant_id: str, phone_hash: str) -> None:
+    _table().delete_item(Key={"pk": f"SESSION#{tenant_id}#{phone_hash}", "sk": SESSION_SK})
+
+
+# --- sweep run markers (spec §7 admin health) ---
+def put_sweep_marker(name: str, ts: datetime) -> None:
+    """Record the last time a scheduled sweep (e.g. "escalation", "pattern") ran."""
+    _table().put_item(
+        Item={
+            "pk": SYSTEM_PK,
+            "sk": f"SWEEP#{name}",
+            "item_type": "SWEEP_MARKER",
+            "last_run": ts.isoformat(),
+        }
+    )
+
+
+def get_sweep_marker(name: str) -> datetime | None:
+    resp = _table().get_item(Key={"pk": SYSTEM_PK, "sk": f"SWEEP#{name}"})
+    item = resp.get("Item")
+    if not item:
+        return None
+    return datetime.fromisoformat(item["last_run"])

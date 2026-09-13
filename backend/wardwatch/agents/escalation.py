@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from ..models import Complaint, Status, TenantConfig
 from ..sla import sla_days
+from ..localize import message as citizen_message
 
 
 @dataclass
@@ -52,8 +53,7 @@ def evaluate(
                 ),
                 supervisor_cc=tier >= 2,
                 citizen_msg=(
-                    f"Your report {c.complaint_id} is overdue and has been escalated. "
-                    "The ward office has been re-notified."
+                    citizen_message(c.language, "overdue", id=c.complaint_id)
                     if tier >= 2
                     else None
                 ),

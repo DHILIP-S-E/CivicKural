@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: WardWatch — DynamoDB, S3, and the two scheduled sweep Lambdas.
+Description: WardWatch — public API, DynamoDB, S3, and scheduled agent workers.
 
 Parameters:
   TableName:
@@ -15,6 +15,35 @@ Parameters:
   VisionModelId:
     Type: String
     Default: apac.anthropic.claude-sonnet-4-20250514-v1:0
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+  WhatsAppToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  WhatsAppPhoneNumberId:
+    Type: String
+    Default: ""
+  WhatsAppVerifyToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+  WhatsAppAppSecret:
+    Type: String
+    NoEcho: true
+    Default: ""
+  # Toggle to "true" only as a deliberate, reviewed migration step (see
+  # JwtSecretManaged resource below) — switching this on requires the same
+  # rotation approval as any other JWT secret change.
+  UseManagedJwtSecret:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Default: "false"
+
+Conditions:
+  ManagedJwtSecretEnabled: !Equals [!Ref UseManagedJwtSecret, "true"]
 
 Globals:
   Function:
@@ -27,6 +56,19 @@ Globals:
         WARDWATCH_BUCKET: !Ref BucketName
         BEDROCK_REASONING_MODEL_ID: !Ref ReasoningModelId
         BEDROCK_VISION_MODEL_ID: !Ref VisionModelId
+        # By default JWT_SECRET is the plain NoEcho parameter below. Setting
+        # UseManagedJwtSecret to "true" (a deliberate, reviewed change — see
+        # JwtSecretManaged) switches this to a dynamic reference resolved
+        # from Secrets Manager at deploy time.
+        JWT_SECRET: !If
+          - ManagedJwtSecretEnabled
+          - !Sub "{{resolve:secretsmanager:${JwtSecretManaged}:SecretString:jwt_secret}}"
+          - !Ref JwtSecret
+        WHATSAPP_TOKEN: !Ref WhatsAppToken
+        WHATSAPP_PHONE_NUMBER_ID: !Ref WhatsAppPhoneNumberId
+        WHATSAPP_VERIFY_TOKEN: !Ref WhatsAppVerifyToken
+        WHATSAPP_APP_SECRET: !Ref WhatsAppAppSecret
+        CONTACT_KMS_KEY_ID: !GetAtt CitizenContactKey.Arn
 
 Resources:
   ComplaintsTable:
@@ -44,6 +86,9 @@ Resources:
       KeySchema:
         - { AttributeName: pk, KeyType: HASH }
         - { AttributeName: sk, KeyType: RANGE }
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
       GlobalSecondaryIndexes:
         - IndexName: gsi1
           KeySchema:
@@ -66,6 +111,76 @@ Resources:
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
 
+  CitizenContactKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: Encrypts citizen notification destinations; plaintext is never persisted
+      EnableKeyRotation: true
+
+  # Prepared only — mirrors infra/cognito-user-pool.json so the frontend's
+  # Cognito dependency is captured in the reviewed template. Not deployed by
+  # this change.
+  WardWatchUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: wardwatch-users
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+      UsernameConfiguration:
+        CaseSensitive: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UserAttributeUpdateSettings:
+        AttributesRequireVerificationBeforeUpdate: []
+      Schema:
+        - Name: role
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          StringAttributeConstraints: { MinLength: "4", MaxLength: "20" }
+        - Name: tenant_id
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          StringAttributeConstraints: { MinLength: "3", MaxLength: "50" }
+        - Name: wards
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          StringAttributeConstraints: { MinLength: "3", MaxLength: "512" }
+
+  WardWatchUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: wardwatch-frontend
+      UserPoolId: !Ref WardWatchUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+
+  # Prepared only, disabled by default (see UseManagedJwtSecret above).
+  # Migrating JWT_SECRET onto this resource requires the same rotation
+  # approval as any other JWT secret change — do not flip
+  # UseManagedJwtSecret without that review.
+  JwtSecretManaged:
+    Type: AWS::SecretsManager::Secret
+    Condition: ManagedJwtSecretEnabled
+    Properties:
+      Description: WardWatch JWT signing secret (managed rotation candidate)
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: jwt_secret
+        PasswordLength: 64
+        ExcludePunctuation: true
+
   SweepPolicy:
     Type: AWS::IAM::ManagedPolicy
     Properties:
@@ -73,7 +188,7 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Action: [dynamodb:Query, dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem]
+            Action: [dynamodb:Query, dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem]
             Resource:
               - !GetAtt ComplaintsTable.Arn
               - !Sub "${ComplaintsTable.Arn}/index/*"
@@ -81,11 +196,60 @@ Resources:
             Action: [s3:GetObject, s3:PutObject]
             Resource: !Sub "${MediaBucket.Arn}/*"
           - Effect: Allow
+            Action: [s3:DeleteObject]
+            Resource:
+              - !Sub "${MediaBucket.Arn}/_transcribe/*"
+              - !Sub "${MediaBucket.Arn}/_sessions/*"
+          - Effect: Allow
             Action: [bedrock:InvokeModel]
             Resource: "*"
           - Effect: Allow
             Action: [ses:SendEmail]
             Resource: "*"
+          - Effect: Allow
+            Action: [sns:Publish]
+            Resource: "*"
+          - Effect: Allow
+            Action: [transcribe:StartTranscriptionJob, transcribe:GetTranscriptionJob, transcribe:DeleteTranscriptionJob]
+            Resource: "*"
+          - Effect: Allow
+            Action: [geo:SearchPlaceIndexForText]
+            Resource: !Sub "arn:${AWS::Partition}:geo:${AWS::Region}:${AWS::AccountId}:place-index/wardwatch-places"
+          - Effect: Allow
+            Action: [kms:Encrypt, kms:Decrypt]
+            Resource: !GetAtt CitizenContactKey.Arn
+
+  WardWatchHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: ["*"]
+        AllowHeaders: ["Authorization", "Content-Type", "X-Citizen-Token"]
+        AllowMethods: ["GET", "POST", "PUT", "OPTIONS"]
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 100
+        ThrottlingRateLimit: 50
+
+  ApiFn:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: wardwatch.api.lambda_handler.handler
+      CodeUri: ../backend
+      Timeout: 60
+      Policies: [!Ref SweepPolicy]
+      Events:
+        Root:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WardWatchHttpApi
+            Path: /
+            Method: ANY
+        Proxy:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref WardWatchHttpApi
+            Path: /{proxy+}
+            Method: ANY
 
   EscalationSweepFn:
     Type: AWS::Serverless::Function
@@ -116,3 +280,9 @@ Outputs:
     Value: !Ref ComplaintsTable
   BucketName:
     Value: !Ref MediaBucket
+  ApiUrl:
+    Value: !Sub "https://${WardWatchHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  UserPoolId:
+    Value: !Ref WardWatchUserPool
+  UserPoolClientId:
+    Value: !Ref WardWatchUserPoolClient

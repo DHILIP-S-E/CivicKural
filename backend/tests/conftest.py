@@ -11,7 +11,8 @@ os.environ.setdefault("AWS_DEFAULT_REGION", "ap-south-1")
 os.environ["WARDWATCH_TABLE"] = "wardwatch-test"
 os.environ["WARDWATCH_BUCKET"] = "wardwatch-test-bucket"
 os.environ["WHATSAPP_TOKEN"] = ""
-os.environ["JWT_SECRET"] = "test-secret"
+os.environ["JWT_SECRET"] = "test-secret-0123456789abcdef0123456789"
+os.environ.setdefault("ENABLE_SIMULATE_ENDPOINT", "true")
 
 from moto import mock_aws  # noqa: E402
 
@@ -71,6 +72,7 @@ def aws(monkeypatch):
             CreateBucketConfiguration={"LocationConstraint": s.aws_region},
         )
         yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

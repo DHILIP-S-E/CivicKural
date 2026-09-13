@@ -14,9 +14,13 @@ def run_sweep(now: datetime | None = None) -> dict:
     for tenant_id in TENANT_WARDS:
         for ward_id in wards_for(tenant_id):
             complaints = db.query_ward(tenant_id, ward_id)
-            for flag in pattern.find_flags(tenant_id, ward_id, complaints, now):
+            existing = {f.flag_id for f in db.query_infra_flags(tenant_id, ward_id)}
+            for flag in pattern.find_flags(
+                tenant_id, ward_id, complaints, now, existing_flag_ids=existing
+            ):
                 db.put_infra_flag(flag)
                 flags_written += 1
+    db.put_sweep_marker("pattern", now)
     return {"infra_flags": flags_written}
 
 

@@ -16,6 +16,11 @@ ONLY a JSON object with keys:
     transcript itself.
   needs_clarification: boolean - true ONLY if the category is genuinely ambiguous
   clarification_question: a single short question, or null
+  evidence_relevant: boolean or null - when a photo is present, whether it visibly
+    supports the reported issue; null when there is no photo
+  evidence_note: one short factual explanation, or null
+  issue_type: a concise snake_case subtype such as pothole, blocked_drain,
+    damaged_sidewalk, park_damage, accessibility, or public_infrastructure
 The category and severity values themselves must always be the fixed English enum
 values above, regardless of what language the citizen wrote in.
 Do not include any prose outside the JSON object.
@@ -32,4 +37,7 @@ def analyze(photo: bytes | None, transcript: str) -> IntakeResult:
         language=data.get("language") or "en",
         needs_clarification=bool(data.get("needs_clarification", False)),
         clarification_question=data.get("clarification_question"),
+        evidence_relevant=data.get("evidence_relevant"),
+        evidence_note=data.get("evidence_note"),
+        issue_type=data.get("issue_type") or data["category"],
     )

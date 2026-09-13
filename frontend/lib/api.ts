@@ -1,23 +1,26 @@
+import { ensureFreshSession, getAccessToken } from "./auth";
+
 const BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 export function getToken(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem("ww_token") ?? "";
-  } catch {
-    return "";
-  }
+  return getAccessToken();
 }
 
 export function setToken(t: string) {
-  try {
-    window.localStorage.setItem("ww_token", t);
-  } catch {
-    /* ignore */
-  }
+  // Kept as a no-op compatibility export for older callers.
+}
+
+export function setCitizenToken(id: string, token: string) {
+  try { window.localStorage.setItem(`ww_citizen_${id}`, token); } catch { /* ignore */ }
+}
+
+function getCitizenToken(id: string): string {
+  if (typeof window === "undefined") return "";
+  try { return window.localStorage.getItem(`ww_citizen_${id}`) ?? ""; } catch { return ""; }
 }
 
 async function req(path: string, init: RequestInit = {}, auth = true) {
+  if (auth) await ensureFreshSession();
   const headers: Record<string, string> = { "Content-Type": "application/json", ...(init.headers as any) };
   if (auth && getToken()) headers.Authorization = `Bearer ${getToken()}`;
   const res = await fetch(`${BASE}${path}`, { ...init, headers, cache: "no-store" });
@@ -41,11 +44,18 @@ export const api = {
     req(`/complaints/${ward}/${id}/status`, { method: "POST", body: JSON.stringify({ status, note }) }),
   verify: (ward: string, id: string, after_photo_b64: string) =>
     req(`/complaints/${ward}/${id}/verify`, { method: "POST", body: JSON.stringify({ after_photo_b64 }) }),
+  submitAuthority: (ward: string, id: string) =>
+    req(`/complaints/${ward}/${id}/authority-submit`, { method: "POST", body: JSON.stringify({ approved: true }) }),
+  authorityStatus: (ward: string, id: string, status: string) =>
+    req(`/complaints/${ward}/${id}/authority-status`, { method: "POST", body: JSON.stringify({ status }) }),
+  infraFlags: (ward: string) => req(`/complaints/${ward}/infra-flags`),
   settings: () => req(`/admin/settings`),
   saveSettings: (cfg: unknown) => req(`/admin/settings`, { method: "PUT", body: JSON.stringify(cfg) }),
+  health: () => req(`/admin/health`),
   compliance: () => req(`/public/compliance`, {}, false),
   hotspots: () => req(`/public/hotspots`, {}, false),
   dashboard: () => req(`/public/dashboard`, {}, false),
+  communityPriorities: () => req(`/public/community-priorities`, {}, false),
 };
 
 export function getDashboard() {
@@ -53,19 +63,32 @@ export function getDashboard() {
 }
 
 export function getComplaintDetail(id: string) {
-  return req(`/public/complaints/${id}`, {}, false);
+  return req(`/public/complaints/${id}`, { headers: { "X-Citizen-Token": getCitizenToken(id) } }, false);
+}
+
+// Converts a file's bytes to base64 without spreading the whole typed array
+// into function arguments — btoa(String.fromCharCode(...bytes)) throws
+// RangeError: Maximum call stack size exceeded for any real-world photo over
+// ~100KB. Chunking keeps each String.fromCharCode call well under the limit.
+export async function fileToBase64(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const chunkSize = 8192;
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export function verifyResolution(id: string, confirmed: boolean, photo?: File | null) {
   return (async () => {
     let new_photo_b64: string | undefined;
     if (photo) {
-      const buf = await photo.arrayBuffer();
-      new_photo_b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      new_photo_b64 = await fileToBase64(photo);
     }
     return req(
       `/public/complaints/${id}/verify-resolution`,
-      { method: "POST", body: JSON.stringify({ confirmed, new_photo_b64 }) },
+      { method: "POST", headers: { "X-Citizen-Token": getCitizenToken(id) }, body: JSON.stringify({ confirmed, new_photo_b64 }) },
       false
     );
   })();
@@ -108,9 +131,8 @@ export async function getNearbyComplaints(opts: {
   return req(`/public/complaints/nearby?${params.toString()}`, {}, false);
 }
 
-export async function supportComplaint(complaintId: string, wardId: string, photo?: File | null) {
+export async function supportComplaint(reference: string, photo?: File | null) {
   const form = new FormData();
-  form.append("ward_id", wardId);
   if (photo) form.append("photo", photo);
-  return reqForm(`/public/complaints/${complaintId}/support`, form);
+  return reqForm(`/public/community/${reference}/support`, form);
 }

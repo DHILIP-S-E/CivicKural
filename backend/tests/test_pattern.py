@@ -27,6 +27,9 @@ def test_three_within_radius_and_window_flags():
     assert len(flags) == 1
     assert flags[0].incident_count == 3
     assert flags[0].category == Category.WATER_LEAK
+    assert pattern.find_flags(
+        "MDU-CORP", "MDU-W14", cs, NOW, _fake_summary, {flags[0].flag_id}
+    ) == []
 
 
 def test_outside_90_day_window_excluded():

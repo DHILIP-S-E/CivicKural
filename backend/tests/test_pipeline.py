@@ -7,7 +7,7 @@ from wardwatch.agents import escalation
 from wardwatch.api.app import create_app
 from wardwatch.api.auth import issue_token
 from wardwatch.llm import set_vision_hook
-from wardwatch.models import Category, Status
+from wardwatch.models import Category, Priority, Status
 from wardwatch.pipeline import Submission
 from wardwatch.schedulers import escalation_sweep
 
@@ -36,6 +36,7 @@ def test_create_then_merge(fakes):
     assert c.geo.source.value == "whatsapp_share"
     assert (c.sla_deadline - c.created_at).days == 7
     assert c.citizen_phone_hash != "+91 90000 11111"
+    assert c.priority in {Priority.HIGH, Priority.CRITICAL}
 
     r2 = handle_submission(_sub(citizen_phone="+91 90000 22222", shared_location=(9.92525, 78.11985)))
     assert r2.kind == "merged"
@@ -108,6 +109,67 @@ def test_verify_gate(fakes):
         json={"after_photo_b64": base64.b64encode(png).decode()},
     )
     assert resp.json()["status"] == Status.RESOLVED.value
+    assert resp.json()["verification_confidence"] == "high"
+    assert resp.json()["resolved_at"] is not None
+
+
+def test_authority_submission_requires_human_approval(fakes):
+    from wardwatch.agents.orchestrator import handle_submission
+
+    c = handle_submission(_sub()).complaint
+    client = TestClient(create_app())
+    tok = issue_token("o", "officer", "MDU-CORP", ["MDU-W14"])
+    url = f"/complaints/MDU-W14/{c.complaint_id}/authority-submit"
+    assert client.post(url, headers={"Authorization": f"Bearer {tok}"}, json={"approved": False}).status_code == 400
+    response = client.post(url, headers={"Authorization": f"Bearer {tok}"}, json={"approved": True})
+    assert response.status_code == 200
+    assert response.json()["simulated"] is True
+    assert response.json()["ticket_id"].startswith("SIM-")
+
+
+def test_officer_payload_does_not_expose_citizen_access_hash(fakes):
+    from wardwatch.agents.orchestrator import handle_submission
+
+    c = handle_submission(_sub(issue_citizen_token=True)).complaint
+    tok = issue_token("o", "officer", "MDU-CORP", ["MDU-W14"])
+    response = TestClient(create_app()).get(
+        f"/complaints/MDU-W14/{c.complaint_id}",
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert response.status_code == 200
+    assert "citizen_access_hashes" not in response.json()
+
+
+def test_coordinator_is_read_only(fakes):
+    from wardwatch.agents.orchestrator import handle_submission
+
+    c = handle_submission(_sub()).complaint
+    token = issue_token("coordinator", "coordinator", "MDU-CORP", ["MDU-W14"])
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {token}"}
+    assert client.get(f"/complaints/MDU-W14/{c.complaint_id}", headers=headers).status_code == 200
+    assert client.post(
+        f"/complaints/MDU-W14/{c.complaint_id}/status",
+        headers=headers,
+        json={"status": "in_progress"},
+    ).status_code == 403
+
+
+def test_authority_resolution_requires_verification(fakes):
+    from wardwatch.agents.orchestrator import handle_submission
+
+    c = handle_submission(_sub()).complaint
+    token = issue_token("officer", "officer", "MDU-CORP", ["MDU-W14"])
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {token}"}
+    base = f"/complaints/MDU-W14/{c.complaint_id}"
+    client.post(f"{base}/authority-submit", headers=headers, json={"approved": True})
+    response = client.post(
+        f"{base}/authority-status", headers=headers, json={"status": "resolved"}
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending_verification"
+    assert response.json()["authority_status"] == "resolved"
 
 
 def _tiny_jpeg() -> bytes:
